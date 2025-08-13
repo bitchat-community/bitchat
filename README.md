@@ -23,10 +23,26 @@ This project is released into the public domain. See the [LICENSE](LICENSE) file
 - **Privacy First**: No accounts, no phone numbers, no persistent identifiers
 - **Private Message End-to-End Encryption**: [Noise Protocol](http://noiseprotocol.org)
 - **Store & Forward**: Messages cached for offline peers and delivered when they reconnect
-- **IRC-Style Commands**: Familiar `/slap`, `/msg`, `/who` style interface
+- **IRC-Style Commands**: Familiar `/slap`, `/msg`, `/who` style interface (type `/` for autocomplete)
 - **Universal App**: Native support for iOS and macOS
 - **Emergency Wipe**: Triple-tap to instantly clear all data
 - **Performance Optimizations**: LZ4 message compression, adaptive battery modes, and optimized networking
+
+
+## Commands
+
+BitChat supports IRC-style slash commands. Type `/` to see available commands with autocomplete:
+
+- `/msg @user [message]` - Send private message to a user
+- `/w` - List currently online users
+- `/clear` - Clear chat history
+- `/slap @user` - Slap someone with a trout (classic IRC fun)
+- `/hug @user` - Give someone a hug
+- `/fav @user` - Add user to favorites (enables Nostr messaging when offline)
+- `/unfav @user` - Remove user from favorites
+- `/block @user` - Block messages from a user
+- `/unblock @user` - Unblock a previously blocked user
+- `/ca` - Display bitchat community token address
 
 
 ## [Technical Architecture](https://deepwiki.com/permissionlesstech/bitchat)
