@@ -37,7 +37,6 @@ struct NostrProtocol {
         
         // 2. Create ephemeral key for this message
         let ephemeralKey = try P256K.Schnorr.PrivateKey()
-        let _ = Data(ephemeralKey.xonly.bytes).hexEncodedString()
         // Created ephemeral key for seal
         
         // 3. Seal the rumor (encrypt to recipient)
@@ -60,10 +59,11 @@ struct NostrProtocol {
     }
     
     /// Decrypt a received NIP-17 message
+    /// Returns the content, sender pubkey, and the actual message timestamp (not the randomized gift wrap timestamp)
     static func decryptPrivateMessage(
         giftWrap: NostrEvent,
         recipientIdentity: NostrIdentity
-    ) throws -> (content: String, senderPubkey: String) {
+    ) throws -> (content: String, senderPubkey: String, timestamp: Int) {
         
         // Starting decryption
         
@@ -95,7 +95,7 @@ struct NostrProtocol {
             throw error
         }
         
-        return (content: rumor.content, senderPubkey: rumor.pubkey)
+        return (content: rumor.content, senderPubkey: rumor.pubkey, timestamp: rumor.created_at)
     }
     
     // MARK: - Private Methods
@@ -213,7 +213,6 @@ struct NostrProtocol {
             throw NostrError.invalidPublicKey
         }
         
-        let _ = Data(senderKey.xonly.bytes).hexEncodedString()
         // Encrypting message
         
         // Derive shared secret
@@ -440,21 +439,19 @@ struct NostrProtocol {
     
     private static func randomizedTimestamp() -> Date {
         // Add random offset to current time for privacy
-        // TEMPORARY: Reduced range to debug timestamp issue
-        let offset = TimeInterval.random(in: -60...60) // +/- 1 minute (was +/- 15 minutes)
+        // This prevents timing correlation attacks while the actual message timestamp
+        // is preserved in the encrypted rumor
+        let offset = TimeInterval.random(in: -900...900) // +/- 15 minutes
         let now = Date()
         let randomized = now.addingTimeInterval(offset)
         
         // Log with explicit UTC and local time for debugging
         let formatter = DateFormatter()
+        // Removed unnecessary date formatting operations
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         formatter.timeZone = TimeZone(abbreviation: "UTC")
-        let _ = formatter.string(from: now)
-        let _ = formatter.string(from: randomized)
         
         formatter.timeZone = TimeZone.current
-        let _ = formatter.string(from: now)
-        let _ = formatter.string(from: randomized)
         
         // Timestamp randomized for privacy
         

@@ -10,7 +10,6 @@ BitChat is a decentralized, peer-to-peer messaging application that works over B
 - **Bluetooth Mesh Networking**: Multi-hop message relay over BLE
 - **Privacy-First Design**: No accounts, no persistent identifiers
 - **End-to-End Encryption**: Uses Noise Protocol Framework for private messages
-- **Store & Forward**: Messages cached for offline peers
 - **IRC-Style Commands**: Familiar `/msg`, `/who` interface
 - **Cross-Platform**: Native iOS and macOS support
 - **Nostr Integration**: Seamless fallback for mutual favorites when out of Bluetooth range
@@ -48,14 +47,14 @@ BitChat is a decentralized, peer-to-peer messaging application that works over B
                     │
 ┌─────────────────────────────────────────────────────────────────┐
 │                   Bluetooth Transport Layer                       │
-│                   (BluetoothMeshService)                          │
+│                  (SimplifiedBluetoothService)                     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Core Components
 
-### 1. BluetoothMeshService (Transport Layer)
-- **Location**: `bitchat/Services/BluetoothMeshService.swift`
+### 1. SimplifiedBluetoothService (Transport Layer)
+- **Location**: `bitchat/Services/SimplifiedBluetoothService.swift`
 - **Purpose**: Manages BLE connections and implements mesh networking
 - **Key Responsibilities**:
   - Peer discovery (scanning and advertising simultaneously)
@@ -142,7 +141,6 @@ BitChat is a decentralized, peer-to-peer messaging application that works over B
 - **No Long-Term Identifiers**: Enhances privacy and deniability
 
 ### 3. Mesh Networking
-- **Store & Forward**: Essential for intermittent connectivity
 - **TTL-Based Routing**: Prevents infinite loops in mesh
 - **Bloom Filters**: Efficient duplicate detection
 
@@ -161,7 +159,7 @@ BitChat is a decentralized, peer-to-peer messaging application that works over B
 
 ### Services (`/bitchat/Services/`)
 Application-level services that coordinate between layers:
-- `BluetoothMeshService`: Core networking
+- `SimplifiedBluetoothService`: Core networking
 - `NoiseEncryptionService`: Encryption coordination
 - `MessageRetryService`: Reliability layer
 - `DeliveryTracker`: Acknowledgment handling
@@ -370,7 +368,7 @@ Structured content for different message types:
 5. Update help text
 
 ### Debugging Bluetooth Issues
-1. Check `BluetoothMeshService` logs
+1. Check `SimplifiedBluetoothService` logs
 2. Verify peer states and connections
 3. Monitor characteristic updates
 4. Use Bluetooth debugging tools

@@ -271,7 +271,6 @@ struct ContentView: View {
                     ForEach(windowedMessages, id: \.id) { message in
                         VStack(alignment: .leading, spacing: 0) {
                             // Check if current user is mentioned
-                            let _ = message.mentions?.contains(viewModel.nickname) ?? false
                             
                             if message.sender == "system" {
                                 // System messages
@@ -398,7 +397,7 @@ struct ContentView: View {
                             _ = viewModel.completeNickname(suggestion, in: &messageText)
                         }) {
                             HStack {
-                                Text("@\(suggestion)")
+                                Text(suggestion)
                                     .font(.system(size: 11, design: .monospaced))
                                     .foregroundColor(textColor)
                                     .fontWeight(.medium)
@@ -427,10 +426,13 @@ struct ContentView: View {
                     let commandInfo: [(commands: [String], syntax: String?, description: String)] = [
                         (["/block"], "[nickname]", "block or list blocked peers"),
                         (["/clear"], nil, "clear chat messages"),
+                        (["/fav"], "<nickname>", "add to favorites"),
+                        (["/help"], nil, "show this help"),
                         (["/hug"], "<nickname>", "send someone a warm hug"),
                         (["/m", "/msg"], "<nickname> [message]", "send private message"),
                         (["/slap"], "<nickname>", "slap someone with a trout"),
                         (["/unblock"], "<nickname>", "unblock a peer"),
+                        (["/unfav"], "<nickname>", "remove from favorites"),
                         (["/w"], nil, "see who's online"),
                         (["/ca"], nil, "bitchat community token address")
                     ]
@@ -514,10 +516,13 @@ struct ContentView: View {
                         let commandDescriptions = [
                             ("/block", "block or list blocked peers"),
                             ("/clear", "clear chat messages"),
+                            ("/fav", "add to favorites"),
+                            ("/help", "show this help"),
                             ("/hug", "send someone a warm hug"),
                             ("/m", "send private message"),
                             ("/slap", "slap someone with a trout"),
                             ("/unblock", "unblock a peer"),
+                            ("/unfav", "remove from favorites"),
                             ("/w", "see who's online")
                         ]
                         
@@ -647,7 +652,7 @@ struct ContentView: View {
                                     displayName: peer.id == currentMyPeerID ? viewModel.nickname : peer.nickname,
                                     isFavorite: peer.favoriteStatus?.isFavorite ?? false,
                                     isMe: peer.id == currentMyPeerID,
-                                    hasUnreadMessages: viewModel.unreadPrivateMessages.contains(peer.id),
+                                    hasUnreadMessages: viewModel.hasUnreadMessages(for: peer.id),
                                     encryptionStatus: viewModel.getEncryptionStatus(for: peer.id),
                                     connectionState: peer.connectionState,
                                     isMutualFavorite: peer.favoriteStatus?.isMutual ?? false
@@ -682,12 +687,6 @@ struct ContentView: View {
                                             .font(.system(size: 10))
                                             .foregroundColor(textColor)
                                             .accessibilityLabel("Connected via mesh")
-                                    case .relayConnected:
-                                        // Chain link for relay connection
-                                        Image(systemName: "link")
-                                            .font(.system(size: 10))
-                                            .foregroundColor(Color.blue)
-                                            .accessibilityLabel("Connected via relay")
                                     case .nostrAvailable:
                                         // Purple globe for mutual favorites reachable via Nostr
                                         Image(systemName: "globe")
@@ -892,7 +891,7 @@ struct ContentView: View {
             
             // People counter with unread indicator
             HStack(spacing: 4) {
-                if !viewModel.unreadPrivateMessages.isEmpty {
+                if viewModel.hasAnyUnreadMessages {
                     Image(systemName: "envelope.fill")
                         .font(.system(size: 12))
                         .foregroundColor(Color.orange)
@@ -903,7 +902,7 @@ struct ContentView: View {
                 let peerCounts = viewModel.allPeers.reduce(into: (others: 0, mesh: 0)) { counts, peer in
                     guard peer.id != viewModel.meshService.myPeerID else { return }
                     
-                    let isMeshConnected = peer.isConnected || peer.isRelayConnected
+                    let isMeshConnected = peer.isConnected
                     if isMeshConnected {
                         counts.mesh += 1
                         counts.others += 1
@@ -951,21 +950,29 @@ struct ContentView: View {
     
     @ViewBuilder
     private func privateHeaderContent(for privatePeerID: String) -> some View {
-        // Try to resolve to current peer ID if this is an old one
-        // resolveCurrentPeerID not implemented
-        let currentPeerID: String = privatePeerID
+        // Prefer short (mesh) ID when mesh-connected (radio). Only use full Noise key when not connected (globe).
+        let headerPeerID: String = {
+            if privatePeerID.count == 16 {
+                let isMeshConnected = viewModel.meshService.isPeerConnected(privatePeerID) || viewModel.connectedPeers.contains(privatePeerID)
+                if !isMeshConnected, let stable = viewModel.getNoiseKeyForShortID(privatePeerID) {
+                    return stable
+                }
+            }
+            return privatePeerID
+        }()
         
-        let peer = viewModel.getPeer(byID: currentPeerID)
+        // Resolve peer object for header context (may be offline favorite)
+        let peer = viewModel.getPeer(byID: headerPeerID)
         let privatePeerNick = peer?.displayName ?? 
-                              viewModel.meshService.getPeerNicknames()[currentPeerID] ?? 
-                              FavoritesPersistenceService.shared.getFavoriteStatus(for: Data(hexString: privatePeerID) ?? Data())?.peerNickname ?? 
+                              viewModel.meshService.getPeerNicknames()[headerPeerID] ?? 
+                              FavoritesPersistenceService.shared.getFavoriteStatus(for: Data(hexString: headerPeerID) ?? Data())?.peerNickname ?? 
                               // getFavoriteStatusByNostrKey not implemented
                               // FavoritesPersistenceService.shared.getFavoriteStatusByNostrKey(privatePeerID)?.peerNickname ?? 
                               "Unknown"
         let isNostrAvailable: Bool = {
             guard let connectionState = peer?.connectionState else { 
                 // Check if we can reach this peer via Nostr even if not in allPeers
-                if let noiseKey = Data(hexString: privatePeerID),
+                if let noiseKey = Data(hexString: headerPeerID),
                    let favoriteStatus = FavoritesPersistenceService.shared.getFavoriteStatus(for: noiseKey),
                    favoriteStatus.isMutual {
                     return true
@@ -983,7 +990,7 @@ struct ContentView: View {
         ZStack {
                     // Center content - always perfectly centered
                     Button(action: {
-                        viewModel.showFingerprint(for: privatePeerID)
+                        viewModel.showFingerprint(for: headerPeerID)
                     }) {
                         HStack(spacing: 6) {
                             // Show transport icon based on connection state (like peer list)
@@ -995,12 +1002,6 @@ struct ContentView: View {
                                         .font(.system(size: 14))
                                         .foregroundColor(textColor)
                                         .accessibilityLabel("Connected via mesh")
-                                case .relayConnected:
-                                    // Chain link for relay connection
-                                    Image(systemName: "link")
-                                        .font(.system(size: 14))
-                                        .foregroundColor(Color.blue)
-                                        .accessibilityLabel("Connected via relay")
                                 case .nostrAvailable:
                                     // Purple globe for Nostr
                                     Image(systemName: "globe")
@@ -1017,6 +1018,12 @@ struct ContentView: View {
                                     .font(.system(size: 14))
                                     .foregroundColor(.purple)
                                     .accessibilityLabel("Available via Nostr")
+                            } else if viewModel.meshService.isPeerConnected(headerPeerID) || viewModel.connectedPeers.contains(headerPeerID) {
+                                // Fallback: if peer lookup is missing but mesh reports connected, show radio
+                                Image(systemName: "dot.radiowaves.left.and.right")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(textColor)
+                                    .accessibilityLabel("Connected via mesh")
                             }
                             
                             Text("\(privatePeerNick)")
@@ -1024,7 +1031,7 @@ struct ContentView: View {
                                 .foregroundColor(textColor)
                             
                             // Dynamic encryption status icon
-                            let encryptionStatus = viewModel.getEncryptionStatus(for: privatePeerID)
+                            let encryptionStatus = viewModel.getEncryptionStatus(for: headerPeerID)
                             if let icon = encryptionStatus.icon {
                                 Image(systemName: icon)
                                     .font(.system(size: 14))
@@ -1060,11 +1067,11 @@ struct ContentView: View {
                         
                         // Favorite button
                         Button(action: {
-                            viewModel.toggleFavorite(peerID: privatePeerID)
+                            viewModel.toggleFavorite(peerID: headerPeerID)
                         }) {
-                            Image(systemName: viewModel.isFavorite(peerID: privatePeerID) ? "star.fill" : "star")
+                            Image(systemName: viewModel.isFavorite(peerID: headerPeerID) ? "star.fill" : "star")
                                 .font(.system(size: 16))
-                                .foregroundColor(viewModel.isFavorite(peerID: privatePeerID) ? Color.yellow : textColor)
+                                .foregroundColor(viewModel.isFavorite(peerID: headerPeerID) ? Color.yellow : textColor)
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(viewModel.isFavorite(peerID: privatePeerID) ? "Remove from favorites" : "Add to favorites")

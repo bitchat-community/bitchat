@@ -18,7 +18,6 @@ struct BitchatPeer: Identifiable, Equatable {
     // Connection state
     enum ConnectionState {
         case bluetoothConnected
-        case relayConnected     // Connected via mesh relay (another peer)
         case nostrAvailable     // Mutual favorite, reachable via Nostr
         case offline            // Not connected via any transport
     }
@@ -26,8 +25,6 @@ struct BitchatPeer: Identifiable, Equatable {
     var connectionState: ConnectionState {
         if isConnected {
             return .bluetoothConnected
-        } else if isRelayConnected {
-            return .relayConnected
         } else if favoriteStatus?.isMutual == true {
             // Mutual favorites can communicate via Nostr when offline
             return .nostrAvailable
@@ -35,8 +32,6 @@ struct BitchatPeer: Identifiable, Equatable {
             return .offline
         }
     }
-    
-    var isRelayConnected: Bool = false  // Set by PeerManager based on session state
     
     var isFavorite: Bool {
         favoriteStatus?.isFavorite ?? false
@@ -59,8 +54,6 @@ struct BitchatPeer: Identifiable, Equatable {
         switch connectionState {
         case .bluetoothConnected:
             return "📻" // Radio icon for mesh connection
-        case .relayConnected:
-            return "🔗" // Chain link for relay connection
         case .nostrAvailable:
             return "🌐" // Purple globe for Nostr
         case .offline:
@@ -78,15 +71,13 @@ struct BitchatPeer: Identifiable, Equatable {
         noisePublicKey: Data,
         nickname: String,
         lastSeen: Date = Date(),
-        isConnected: Bool = false,
-        isRelayConnected: Bool = false
+        isConnected: Bool = false
     ) {
         self.id = id
         self.noisePublicKey = noisePublicKey
         self.nickname = nickname
         self.lastSeen = lastSeen
         self.isConnected = isConnected
-        self.isRelayConnected = isRelayConnected
         
         // Load favorite status - will be set later by the manager
         self.favoriteStatus = nil
@@ -107,10 +98,10 @@ class PeerManager: ObservableObject {
     @Published var favorites: [BitchatPeer] = []
     @Published var mutualFavorites: [BitchatPeer] = []
     
-    private let meshService: BluetoothMeshService
+    private let meshService: SimplifiedBluetoothService
     private let favoritesService = FavoritesPersistenceService.shared
     
-    init(meshService: BluetoothMeshService) {
+    init(meshService: SimplifiedBluetoothService) {
         self.meshService = meshService
         updatePeers()
         
@@ -151,33 +142,18 @@ class PeerManager: ObservableObject {
             
             // Safety check: Never add our own peer ID
             if peerID == meshService.myPeerID {
-                SecureLogger.log("⚠️ Skipping self peer ID \(peerID) in peer list", 
-                               category: SecureLogger.session, level: .warning)
                 continue
             }
             
-            // Check if this peer is actually connected (not just known via relay)
+            // Check if this peer is actually connected
             let isConnected = meshService.isPeerConnected(peerID)
-            let isKnown = meshService.isPeerKnown(peerID)
-            // In a mesh network, a peer can only be relay-connected if:
-            // 1. We know about them (have received announce)
-            // 2. We're not directly connected
-            // 3. There are other peers that could relay (mesh peer count > 2)
-            // For now, disable relay detection until we have proper relay tracking
-            let isRelayConnected = false
-            
-            // Debug logging for relay connection detection
-            if isKnown && !isConnected {
-                SecureLogger.log("Peer \(nickname) (\(peerID)): isConnected=\(isConnected), isKnown=\(isKnown), isRelayConnected=\(isRelayConnected)", 
-                               category: SecureLogger.session, level: .debug)
-            }
             
             // Skip disconnected peers unless they're favorites (handled later)
-            if !isConnected && !isRelayConnected {
+            if !isConnected {
                 continue
             }
             
-            if isConnected || isRelayConnected {
+            if isConnected {
                 connectedNicknames.insert(nickname)
             }
             
@@ -188,8 +164,7 @@ class PeerManager: ObservableObject {
                 id: peerID,
                 noisePublicKey: noiseKey,
                 nickname: nickname,
-                isConnected: isConnected,
-                isRelayConnected: isRelayConnected
+                isConnected: isConnected
             )
             // Set favorite status - check both by current noise key and by nickname
             if let favoriteStatus = favoritesService.getFavoriteStatus(for: noiseKey) {
@@ -211,31 +186,26 @@ class PeerManager: ObservableObject {
             allPeers.append(peer)
         }
         
-        // Add offline favorites (only those not currently connected/relay-connected AND that we actively favorite)
-        SecureLogger.log("📋 Processing \(favoritesService.favorites.count) favorite relationships (connected/relay nicknames: \(connectedNicknames))", 
-                        category: SecureLogger.session, level: .info)
+        // Add offline favorites (only those not currently connected AND that we actively favorite)
         
         for (favoriteKey, favorite) in favoritesService.favorites {
             let favoriteID = favorite.peerNoisePublicKey.hexEncodedString()
             
-            // Skip if this peer is already connected or relay-connected (by nickname)
+            // Skip if this peer is already connected (by nickname)
             if connectedNicknames.contains(favorite.peerNickname) {
-                SecureLogger.log("  - Skipping '\(favorite.peerNickname)' (key: \(favoriteKey.hexEncodedString())) - already connected/relay-connected", 
-                                category: SecureLogger.session, level: .debug)
+                // Skipping favorite - already connected
                 continue
             }
             
             // Skip if we already added a peer with this ID (prevents duplicates)
             if addedPeerIDs.contains(favoriteID) {
-                SecureLogger.log("  - Skipping '\(favorite.peerNickname)' - peer ID already added", 
-                                category: SecureLogger.session, level: .debug)
+                // Skipping favorite - peer ID already added
                 continue
             }
             
             // Only add peers that WE favorite (not just ones who favorite us)
             if !favorite.isFavorite {
-                SecureLogger.log("  - Skipping '\(favorite.peerNickname)' - we don't favorite them (they favorite us: \(favorite.theyFavoritedUs))", 
-                                category: SecureLogger.session, level: .debug)
+                // Skipping - we don't favorite them
                 continue
             }
             
@@ -261,15 +231,11 @@ class PeerManager: ObservableObject {
             !(peer.displayName == "Unknown" && peer.favoriteStatus == nil)
         }
         
-        // Sort: Connected first (direct then relay), then favorites, then alphabetical
+        // Sort: Connected first, then favorites, then alphabetical
         allPeers.sort { lhs, rhs in
             // Direct connections first
             if lhs.isConnected != rhs.isConnected {
                 return lhs.isConnected
-            }
-            // Then relay connections
-            if lhs.isRelayConnected != rhs.isRelayConnected {
-                return lhs.isRelayConnected
             }
             // Then favorites
             if lhs.isFavorite != rhs.isFavorite {
@@ -316,33 +282,13 @@ class PeerManager: ObservableObject {
         self.favorites = favorites
         self.mutualFavorites = mutualFavorites
         
-        // Always log favorites debug info when there are favorites
+        // Log peer list summary sparingly at debug level
         if favoritesService.favorites.count > 0 {
             SecureLogger.log("📊 Peer list update: \(allPeers.count) total (\(connectedCount) connected, \(offlineCount) offline), \(favorites.count) favorites, \(mutualFavorites.count) mutual", 
-                            category: SecureLogger.session, level: .info)
-            
-            // Log each peer's status
-            for peer in allPeers {
-                // Use the actual statusIcon from the peer which accounts for relay connections
-                let statusIcon: String
-                switch peer.connectionState {
-                case .bluetoothConnected:
-                    statusIcon = "🟢"
-                case .relayConnected:
-                    statusIcon = "🔗"
-                case .nostrAvailable:
-                    statusIcon = "🌐"
-                case .offline:
-                    statusIcon = "🔴"
-                }
-                let favoriteIcon = peer.isMutualFavorite ? "💕" : (peer.isFavorite ? "⭐" : (peer.theyFavoritedUs ? "🌙" : ""))
-                SecureLogger.log("  \(statusIcon) \(peer.displayName) (ID: \(peer.id.prefix(8))...) \(favoriteIcon)", 
-                                category: SecureLogger.session, level: .debug)
-            }
+                            category: SecureLogger.session, level: .debug)
         } else if previousCount != allPeers.count {
-            // Only log non-favorite updates if count changed
             SecureLogger.log("✅ Updated peer list: \(allPeers.count) total peers", 
-                            category: SecureLogger.session, level: .info)
+                            category: SecureLogger.session, level: .debug)
         }
     }
     

@@ -57,7 +57,6 @@ bitchat uses an efficient binary protocol optimized for Bluetooth LE:
 ### Mesh Networking
 - Each device acts as both client and peripheral
 - Automatic peer discovery and connection management
-- Store-and-forward for offline message delivery
 - Adaptive duty cycling for battery optimization
 
 For detailed protocol documentation, see the [Technical Whitepaper](WHITEPAPER.md).

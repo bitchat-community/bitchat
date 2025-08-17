@@ -221,20 +221,3 @@ extension Data {
     }
 }
 
-// MARK: - Binary Message Protocol
-
-protocol BinaryEncodable {
-    func toBinaryData() -> Data
-    static func fromBinaryData(_ data: Data) -> Self?
-}
-
-// MARK: - Message Type Registry
-
-enum BinaryMessageType: UInt8 {
-    case deliveryAck = 0x01
-    case readReceipt = 0x02
-    case versionHello = 0x07
-    case versionAck = 0x08
-    case noiseIdentityAnnouncement = 0x09
-    case noiseMessage = 0x0A
-}
