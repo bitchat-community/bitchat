@@ -54,6 +54,8 @@ class CommandProcessor {
             return handleFavorite(args, add: false)
         case "/help", "/h":
             return handleHelp()
+        case "/ca":
+            return handleCommunityAddress()
         default:
             return .error(message: "unknown command: \(cmd)")
         }
@@ -261,7 +263,12 @@ class CommandProcessor {
         /unfav @name - remove from favorites
         /block @name - block
         /unblock @name - unblock
+        /ca - bitchat community token address
         """
         return .success(message: helpText)
+    }
+    
+    private func handleCommunityAddress() -> CommandResult {
+        return .success(message: "HsubwaQv2FvtgVc3gSMEu9GD5whey5BjmBCFo1zHR1wS")
     }
 }

@@ -433,7 +433,8 @@ struct ContentView: View {
                         (["/slap"], "<nickname>", "slap someone with a trout"),
                         (["/unblock"], "<nickname>", "unblock a peer"),
                         (["/unfav"], "<nickname>", "remove from favorites"),
-                        (["/w"], nil, "see who's online")
+                        (["/w"], nil, "see who's online"),
+                        (["/ca"], nil, "bitchat community token address")
                     ]
                     
                     // Build the display
