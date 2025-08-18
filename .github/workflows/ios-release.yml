@@ -1,0 +1,81 @@
+name: iOS Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*.*.*' # Triggers for tags like v1.3.0
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install dependencies
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Build iOS Archive
+        run: |
+          xcodebuild -project bitchat.xcodeproj \
+                     -scheme "bitchat (iOS)" \
+                     -configuration Release \
+                     -destination "generic/platform=iOS" \
+                     -archivePath bitchat.xcarchive \
+                     archive
+
+      - name: Export IPA
+        run: |
+          # Create export options plist
+          cat > ExportOptions.plist << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>development</string>
+              <key>teamID</key>
+              <string>\${{ secrets.TEAM_ID }}</string>
+          </dict>
+          </plist>
+          EOF
+          
+          xcodebuild -exportArchive \
+                     -archivePath bitchat.xcarchive \
+                     -exportPath . \
+                     -exportOptionsPlist ExportOptions.plist
+
+      - name: Upload IPA as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bitchat-ios-${{ github.ref_name }}
+          path: "*.ipa"
+          retention-days: 30
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download IPA artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bitchat-ios-${{ github.ref_name }}
+          path: .
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "*.ipa"
+          name: iOS Release ${{ github.ref_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

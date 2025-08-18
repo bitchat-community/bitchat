@@ -1,0 +1,51 @@
+name: iOS Build
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - '**'
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install dependencies
+        run: |
+          brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build iOS
+        run: |
+          xcodebuild -project bitchat.xcodeproj \
+                     -scheme "bitchat (iOS)" \
+                     -configuration Debug \
+                     -destination "platform=iOS Simulator,name=iPhone 15" \
+                     build
+
+      - name: Build macOS  
+        run: |
+          xcodebuild -project bitchat.xcodeproj \
+                     -scheme "bitchat (macOS)" \
+                     -configuration Debug \
+                     build
+
+      - name: Run Tests
+        run: |
+          xcodebuild test \
+                     -project bitchat.xcodeproj \
+                     -scheme "bitchat (iOS)" \
+                     -destination "platform=iOS Simulator,name=iPhone 15"

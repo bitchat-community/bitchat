@@ -957,6 +957,13 @@ struct ContentView: View {
                 if !isMeshConnected, let stable = viewModel.getNoiseKeyForShortID(privatePeerID) {
                     return stable
                 }
+            } else if privatePeerID.count == 64 {
+                // If we have a full Noise key and a corresponding short ID is currently mesh-connected, prefer short ID
+                if let short = viewModel.getShortIDForNoiseKey(privatePeerID) {
+                    if viewModel.meshService.isPeerConnected(short) || viewModel.connectedPeers.contains(short) {
+                        return short
+                    }
+                }
             }
             return privatePeerID
         }()
@@ -964,7 +971,7 @@ struct ContentView: View {
         // Resolve peer object for header context (may be offline favorite)
         let peer = viewModel.getPeer(byID: headerPeerID)
         let privatePeerNick = peer?.displayName ?? 
-                              viewModel.meshService.getPeerNicknames()[headerPeerID] ?? 
+                              viewModel.meshService.peerNickname(peerID: headerPeerID) ??
                               FavoritesPersistenceService.shared.getFavoriteStatus(for: Data(hexString: headerPeerID) ?? Data())?.peerNickname ?? 
                               // getFavoriteStatusByNostrKey not implemented
                               // FavoritesPersistenceService.shared.getFavoriteStatusByNostrKey(privatePeerID)?.peerNickname ?? 
