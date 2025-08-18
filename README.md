@@ -1,4 +1,4 @@
-<img width="256" height="256" alt="BitChat Community Logo" src="https://github.com/bitchat-community/assets/raw/main/logo-community.png" />
+<img width="256" height="256" alt="BitChat Community Logo" src="bitchat/Assets.xcassets/AppIcon.appiconset/icon_1024x1024.png" />
 
 ## BitChat Community
 
