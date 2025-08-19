@@ -1,12 +1,12 @@
-<img width="256" height="256" alt="icon_128x128@2x" src="https://github.com/user-attachments/assets/90133f83-b4f6-41c6-aab9-25d0859d2a47" />
+<img width="256" height="256" alt="BitChat Community Logo" src="bitchat/Assets.xcassets/AppIcon.appiconset/icon_1024x1024.png" />
 
-## bitchat
+## BitChat Community
 
 A decentralized peer-to-peer messaging app that works over Bluetooth mesh networks. No internet required, no servers, no phone numbers. It's the side-groupchat. 
 
-[bitchat.free](http://bitchat.free)
+[BitChat Community](https://bitchat.community)
 
-📲 [App Store](https://apps.apple.com/us/app/bitchat-mesh/id6748219622)
+📲 [App Store](https://apps.apple.com/us/app/bitchat-community/id6748219622)
 
 > [!WARNING]
 > Private messages have not received external security review and may contain vulnerabilities. Do not use for sensitive use cases, and do not rely on its security until it has been reviewed. Now uses the [Noise Protocol](http://www.noiseprotocol.org) for identity and encryption. Public local chat (the main feature) has no security concerns. 
@@ -22,10 +22,27 @@ This project is released into the public domain. See the [LICENSE](LICENSE) file
 - **Decentralized Mesh Network**: Automatic peer discovery and multi-hop message relay over Bluetooth LE
 - **Privacy First**: No accounts, no phone numbers, no persistent identifiers
 - **Private Message End-to-End Encryption**: [Noise Protocol](http://noiseprotocol.org)
-- **IRC-Style Commands**: Familiar `/slap`, `/msg`, `/who` style interface
+- **Store & Forward**: Messages cached for offline peers and delivered when they reconnect
+- **IRC-Style Commands**: Familiar `/slap`, `/msg`, `/who` style interface (type `/` for autocomplete)
 - **Universal App**: Native support for iOS and macOS
 - **Emergency Wipe**: Triple-tap to instantly clear all data
 - **Performance Optimizations**: LZ4 message compression, adaptive battery modes, and optimized networking
+
+
+## Commands
+
+BitChat supports IRC-style slash commands. Type `/` to see available commands with autocomplete:
+
+- `/msg @user [message]` - Send private message to a user
+- `/w` - List currently online users
+- `/clear` - Clear chat history
+- `/slap @user` - Slap someone with a trout (classic IRC fun)
+- `/hug @user` - Give someone a hug
+- `/fav @user` - Add user to favorites (enables Nostr messaging when offline)
+- `/unfav @user` - Remove user from favorites
+- `/block @user` - Block messages from a user
+- `/unblock @user` - Unblock a previously blocked user
+- `/ca` - Display BitChat community token address
 
 
 ## [Technical Architecture](https://deepwiki.com/permissionlesstech/bitchat)
