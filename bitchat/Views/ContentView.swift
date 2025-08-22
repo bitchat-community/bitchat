@@ -77,6 +77,8 @@ struct ContentView: View {
     @State private var selectedMessageSender: String?
     @State private var selectedMessageSenderID: String?
     @FocusState private var isNicknameFieldFocused: Bool
+    @State private var isAtBottomPublic: Bool = true
+    @State private var isAtBottomPrivate: Bool = true
     @State private var lastScrollTime: Date = .distantPast
     @State private var scrollThrottleTimer: Timer?
     @State private var autocompleteDebounceTimer: Timer?
@@ -204,6 +206,14 @@ struct ContentView: View {
             isPresented: $showMessageActions,
             titleVisibility: .visible
         ) {
+            Button("mention") {
+                if let sender = selectedMessageSender {
+                    // Pre-fill the input with an @mention and focus the field
+                    messageText = "@\(sender) "
+                    isTextFieldFocused = true
+                }
+            }
+
             Button("private message") {
                 if let peerID = selectedMessageSenderID {
                     #if os(iOS)
@@ -265,7 +275,7 @@ struct ContentView: View {
     
     // MARK: - Message List View
     
-    private func messagesView(privatePeer: String?) -> some View {
+    private func messagesView(privatePeer: String?, isAtBottom: Binding<Bool>) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
@@ -325,6 +335,17 @@ struct ContentView: View {
                             }
                         }
                         .id(message.id)
+                        .onAppear {
+                            // Track if last item is visible to enable auto-scroll only when near bottom
+                            if message.id == windowedMessages.last?.id {
+                                isAtBottom.wrappedValue = true
+                            }
+                        }
+                        .onDisappear {
+                            if message.id == windowedMessages.last?.id {
+                                isAtBottom.wrappedValue = false
+                            }
+                        }
                         .contentShape(Rectangle())
                         .onTapGesture {
                             // Only show actions for messages from other users (not system or self)
@@ -332,6 +353,17 @@ struct ContentView: View {
                                 selectedMessageSender = message.sender
                                 selectedMessageSenderID = message.senderPeerID
                                 showMessageActions = true
+                            }
+                        }
+                        .contextMenu {
+                            Button("Copy message") {
+                                #if os(iOS)
+                                UIPasteboard.general.string = message.content
+                                #else
+                                let pb = NSPasteboard.general
+                                pb.clearContents()
+                                pb.setString(message.content, forType: .string)
+                                #endif
                             }
                         }
                         .padding(.horizontal, 12)
@@ -347,6 +379,8 @@ struct ContentView: View {
             }
             .onChange(of: viewModel.messages.count) { _ in
                 if privatePeer == nil && !viewModel.messages.isEmpty {
+                    // Only autoscroll when user is at/near bottom
+                    guard isAtBottom.wrappedValue else { return }
                     // Throttle scroll animations to prevent excessive UI updates
                     let now = Date()
                     if now.timeIntervalSince(lastScrollTime) > 0.5 {
@@ -367,6 +401,8 @@ struct ContentView: View {
                 if let peerID = privatePeer,
                    let messages = viewModel.privateChats[peerID],
                    !messages.isEmpty {
+                    // Only autoscroll when user is at/near bottom
+                    guard isAtBottom.wrappedValue else { return }
                     // Same throttling for private chats
                     let now = Date()
                     if now.timeIntervalSince(lastScrollTime) > 0.5 {
@@ -509,10 +545,7 @@ struct ContentView: View {
                 .foregroundColor(textColor)
                 .focused($isTextFieldFocused)
                 .padding(.leading, 12)
-                .autocorrectionDisabled(true)
-                #if os(iOS)
-                .textInputAutocapitalization(.never)
-                #endif
+                // iOS keyboard autocomplete and capitalization enabled by default
                 .onChange(of: messageText) { newValue in
                     // Cancel previous debounce timer
                     autocompleteDebounceTimer?.invalidate()
@@ -696,7 +729,7 @@ struct ContentView: View {
         VStack(spacing: 0) {
             mainHeaderView
             Divider()
-            messagesView(privatePeer: nil)
+            messagesView(privatePeer: nil, isAtBottom: $isAtBottomPublic)
             Divider()
             inputView
         }
@@ -746,7 +779,7 @@ struct ContentView: View {
             VStack(spacing: 0) {
                 privateHeaderView
                 Divider()
-                messagesView(privatePeer: viewModel.selectedPrivateChatPeer)
+                messagesView(privatePeer: viewModel.selectedPrivateChatPeer, isAtBottom: $isAtBottomPrivate)
                 Divider()
                 inputView
             }
@@ -835,52 +868,57 @@ struct ContentView: View {
             
             Spacer()
             
-            // People counter with unread indicator
-            HStack(spacing: 4) {
-                if viewModel.hasAnyUnreadMessages {
-                    Image(systemName: "envelope.fill")
-                        .font(.system(size: 12))
-                        .foregroundColor(Color.orange)
-                        .accessibilityLabel("Unread private messages")
+            // Channel badge + dynamic spacing + people counter
+            // Precompute header count and color outside the ViewBuilder expressions
+            #if os(iOS)
+            let cc = channelPeopleCountAndColor()
+            let headerCountColor: Color = cc.1
+            let headerOtherPeersCount: Int = {
+                if case .location = locationManager.selectedChannel {
+                    return viewModel.visibleGeohashPeople().count
                 }
+                return cc.0
+            }()
+            #else
+            let peerCounts = viewModel.allPeers.reduce(into: (others: 0, mesh: 0)) { counts, peer in
+                guard peer.id != viewModel.meshService.myPeerID else { return }
+                let isMeshConnected = peer.isConnected
+                if isMeshConnected { counts.mesh += 1; counts.others += 1 }
+                else if peer.isMutualFavorite { counts.others += 1 }
+            }
+            let headerOtherPeersCount = peerCounts.others
+            // Darker, more neutral blue (less purple hue)
+            let meshBlue = Color(hue: 0.60, saturation: 0.85, brightness: 0.82)
+            let headerCountColor: Color = (peerCounts.mesh > 0) ? meshBlue : Color.secondary
+            #endif
 
-                // People count depends on active channel
-                #if os(iOS)
-                let cc = channelPeopleCountAndColor()
-                let otherPeersCount = cc.0
-                let countColor = cc.1
-                #else
-                let peerCounts = viewModel.allPeers.reduce(into: (others: 0, mesh: 0)) { counts, peer in
-                    guard peer.id != viewModel.meshService.myPeerID else { return }
-                    let isMeshConnected = peer.isConnected
-                    if isMeshConnected { counts.mesh += 1; counts.others += 1 }
-                    else if peer.isMutualFavorite { counts.others += 1 }
-                }
-                let otherPeersCount = peerCounts.others
-                // Darker, more neutral blue (less purple hue)
-                let meshBlue = Color(hue: 0.60, saturation: 0.85, brightness: 0.82)
-                let countColor: Color = (peerCounts.mesh > 0) ? meshBlue : Color.secondary
-                #endif
+            HStack(spacing: 10) {
+                // Unread icon immediately to the left of the channel badge (independent from channel button)
                 
-                // Location channels button '#'
+                // Unread indicator
                 #if os(iOS)
+                if viewModel.hasAnyUnreadMessages {
+                    Button(action: { viewModel.openMostRelevantPrivateChat() }) {
+                        Image(systemName: "envelope.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(Color.orange)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Open unread private chat")
+                }
+                // Location channels button '#'
                 Button(action: { showLocationChannelsSheet = true }) {
-                    #if os(iOS)
                     let badgeText: String = {
                         switch locationManager.selectedChannel {
-                        case .mesh:
-                            return "#mesh"
-                        case .location(let ch):
-                            return "#\(ch.geohash)"
+                        case .mesh: return "#mesh"
+                        case .location(let ch): return "#\(ch.geohash)"
                         }
                     }()
                     let badgeColor: Color = {
                         switch locationManager.selectedChannel {
                         case .mesh:
-                            // Darker, more neutral blue (less purple hue)
                             return Color(hue: 0.60, saturation: 0.85, brightness: 0.82)
                         case .location:
-                            // Standard green to avoid overly bright appearance in light mode
                             return (colorScheme == .dark) ? Color.green : Color(red: 0, green: 0.5, blue: 0)
                         }
                     }()
@@ -888,31 +926,23 @@ struct ContentView: View {
                         .font(.system(size: 14, design: .monospaced))
                         .foregroundColor(badgeColor)
                         .lineLimit(1)
-                        .truncationMode(.head)
-                        .frame(minWidth: 60, maxWidth: 160, alignment: .trailing)
-                        .fixedSize(horizontal: false, vertical: false)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .layoutPriority(2)
                         .accessibilityLabel("location channels")
-                    #else
-                    Text("#")
-                        .font(.system(size: 14, design: .monospaced))
-                        .foregroundColor(secondaryTextColor)
-                        .accessibilityLabel("location channels")
-                    #endif
                 }
                 .buttonStyle(.plain)
-                .padding(.trailing, 6)
                 #endif
 
                 HStack(spacing: 4) {
                     // People icon with count
                     Image(systemName: "person.2.fill")
                         .font(.system(size: 11))
-                        .accessibilityLabel("\(otherPeersCount) \(otherPeersCount == 1 ? "person" : "people")")
-                    Text("\(otherPeersCount)")
+                        .accessibilityLabel("\(headerOtherPeersCount) people")
+                    Text("\(headerOtherPeersCount)")
                         .font(.system(size: 12, design: .monospaced))
                         .accessibilityHidden(true)
                 }
-                .foregroundColor(countColor)
+                .foregroundColor(headerCountColor)
             }
             .onTapGesture {
                 withAnimation(.easeInOut(duration: 0.2)) {

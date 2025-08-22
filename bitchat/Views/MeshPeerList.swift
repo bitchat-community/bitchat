@@ -7,6 +7,7 @@ struct MeshPeerList: View {
     let onTapPeer: (String) -> Void
     let onToggleFavorite: (String) -> Void
     let onShowFingerprint: (String) -> Void
+    @Environment(\.colorScheme) var colorScheme
 
     var body: some View {
         Group {
@@ -17,7 +18,6 @@ struct MeshPeerList: View {
                     .padding(.horizontal)
                     .padding(.top, 12)
             } else {
-                let peerNicknames = viewModel.meshService.getPeerNicknames()
                 let myPeerID = viewModel.meshService.myPeerID
                 let mapped: [(peer: BitchatPeer, isMe: Bool, hasUnread: Bool, enc: EncryptionStatus)] = viewModel.allPeers.map { peer in
                     let isMe = peer.id == myPeerID
@@ -60,9 +60,20 @@ struct MeshPeerList: View {
                         }
 
                         let displayName = isMe ? viewModel.nickname : peer.nickname
-                        Text(displayName)
-                            .font(.system(size: 14, design: .monospaced))
-                            .foregroundColor((peer.favoriteStatus?.isFavorite ?? false) || peerNicknames[peer.id] != nil ? textColor : secondaryTextColor)
+                        let (base, suffix) = splitSuffix(from: displayName)
+                        let assigned = viewModel.colorForMeshPeer(id: peer.id, isDark: colorScheme == .dark)
+                        let baseColor = isMe ? Color.orange : assigned
+                        HStack(spacing: 0) {
+                            Text(base)
+                                .font(.system(size: 14, design: .monospaced))
+                                .foregroundColor(baseColor)
+                            if !suffix.isEmpty {
+                                let suffixColor = isMe ? Color.orange.opacity(0.6) : baseColor.opacity(0.6)
+                                Text(suffix)
+                                    .font(.system(size: 14, design: .monospaced))
+                                    .foregroundColor(suffixColor)
+                            }
+                        }
 
                         if let icon = item.enc.icon, !isMe {
                             Image(systemName: icon)
@@ -83,7 +94,7 @@ struct MeshPeerList: View {
                     }
                     .padding(.horizontal)
                     .padding(.vertical, 4)
-                    .padding(.top, idx == 0 ? 6 : 0)
+                    .padding(.top, idx == 0 ? 10 : 0)
                     .contentShape(Rectangle())
                     .onTapGesture { if !isMe { onTapPeer(peer.id) } }
                     .onTapGesture(count: 2) { if !isMe { onShowFingerprint(peer.id) } }
@@ -91,4 +102,17 @@ struct MeshPeerList: View {
             }
         }
     }
+}
+
+// Helper to split a trailing #abcd suffix
+private func splitSuffix(from name: String) -> (String, String) {
+    guard name.count >= 5 else { return (name, "") }
+    let suffix = String(name.suffix(5))
+    if suffix.first == "#", suffix.dropFirst().allSatisfy({ c in
+        ("0"..."9").contains(String(c)) || ("a"..."f").contains(String(c)) || ("A"..."F").contains(String(c))
+    }) {
+        let base = String(name.dropLast(5))
+        return (base, suffix)
+    }
+    return (name, "")
 }
