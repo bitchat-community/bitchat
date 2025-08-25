@@ -25,32 +25,7 @@ struct PeerDisplayData: Identifiable {
     let isMutualFavorite: Bool
 }
 
-// MARK: - Lazy Link Preview
-
-// Lazy loading wrapper for link previews
-struct LazyLinkPreviewView: View {
-    let url: URL
-    let title: String?
-    @State private var isVisible = false
-    
-    var body: some View {
-        GeometryReader { geometry in
-            if isVisible {
-                LinkPreviewView(url: url, title: title)
-            } else {
-                // Placeholder while not visible
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(Color.gray.opacity(0.1))
-                    .frame(height: 80)
-                    .onAppear {
-                        // Only load when view appears on screen
-                        isVisible = true
-                    }
-            }
-        }
-        .frame(height: 80)
-    }
-}
+// (Link previews removed; URLs are now clickable inline)
 
 // MARK: - Main Content View
 
@@ -83,6 +58,11 @@ struct ContentView: View {
     @State private var scrollThrottleTimer: Timer?
     @State private var autocompleteDebounceTimer: Timer?
     @State private var showLocationChannelsSheet = false
+    @State private var showVerifySheet = false
+    @State private var expandedMessageIDs: Set<String> = []
+    // Window sizes for rendering (infinite scroll up)
+    @State private var windowCountPublic: Int = 300
+    @State private var windowCountPrivate: [String: Int] = [:]
     
     // MARK: - Computed Properties
     
@@ -105,6 +85,10 @@ struct ContentView: View {
             ZStack {
                 // Base layer - Main public chat (always visible)
                 mainChatView
+                    .onAppear { viewModel.currentColorScheme = colorScheme }
+                    .onChange(of: colorScheme) { newValue in
+                        viewModel.currentColorScheme = newValue
+                    }
                 
                 // Private chat slide-over
                 if viewModel.selectedPrivateChatPeer != nil {
@@ -214,7 +198,7 @@ struct ContentView: View {
                 }
             }
 
-            Button("private message") {
+            Button("direct message") {
                 if let peerID = selectedMessageSenderID {
                     #if os(iOS)
                     if peerID.hasPrefix("nostr:") {
@@ -247,9 +231,18 @@ struct ContentView: View {
             }
             
             Button("BLOCK", role: .destructive) {
-                if let sender = selectedMessageSender {
+                // Prefer direct geohash block when we have a Nostr sender ID
+                #if os(iOS)
+                if let peerID = selectedMessageSenderID, peerID.hasPrefix("nostr:"),
+                   let full = viewModel.fullNostrHex(forSenderPeerID: peerID),
+                   let sender = selectedMessageSender {
+                    viewModel.blockGeohashUser(pubkeyHexLowercased: full, displayName: sender)
+                } else if let sender = selectedMessageSender {
                     viewModel.sendMessage("/block \(sender)")
                 }
+                #else
+                if let sender = selectedMessageSender { viewModel.sendMessage("/block \(sender)") }
+                #endif
             }
             
             Button("cancel", role: .cancel) {}
@@ -289,27 +282,52 @@ struct ContentView: View {
                         }
                     }()
                     
-                    // Implement windowing - show last 100 messages for performance
-                    let windowedMessages = messages.suffix(100)
+                    // Implement windowing with adjustable window count per chat
+                    let currentWindowCount: Int = {
+                        if let peer = privatePeer { return windowCountPrivate[peer] ?? 300 }
+                        return windowCountPublic
+                    }()
+                    let windowedMessages = messages.suffix(currentWindowCount)
+
+                    // Build stable UI IDs with a context key to avoid ID collisions when switching channels
+                    #if os(iOS)
+                    let contextKey: String = {
+                        if let peer = privatePeer { return "dm:\(peer)" }
+                        switch locationManager.selectedChannel {
+                        case .mesh: return "mesh"
+                        case .location(let ch): return "geo:\(ch.geohash)"
+                        }
+                    }()
+                    #else
+                    let contextKey: String = {
+                        if let peer = privatePeer { return "dm:\(peer)" }
+                        return "mesh"
+                    }()
+                    #endif
+                    let items = windowedMessages.map { (uiID: "\(contextKey)|\($0.id)", message: $0) }
                     
-                    ForEach(windowedMessages, id: \.id) { message in
+                    ForEach(items, id: \.uiID) { item in
+                        let message = item.message
                         VStack(alignment: .leading, spacing: 0) {
                             // Check if current user is mentioned
                             
                             if message.sender == "system" {
                                 // System messages
                                 Text(viewModel.formatMessageAsText(message, colorScheme: colorScheme))
-                                    .textSelection(.enabled)
                                     .fixedSize(horizontal: false, vertical: true)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             } else {
                                 // Regular messages with natural text wrapping
                                 VStack(alignment: .leading, spacing: 0) {
+                                    // Precompute heavy token scans once per row
+                                    let cashuTokens = message.content.extractCashuTokens()
+                                    let lightningLinks = message.content.extractLightningLinks()
                                     HStack(alignment: .top, spacing: 0) {
-                                        // Single text view for natural wrapping
+                                        let isLong = (message.content.count > 2000 || message.content.hasVeryLongToken(threshold: 512)) && cashuTokens.isEmpty
+                                        let isExpanded = expandedMessageIDs.contains(message.id)
                                         Text(viewModel.formatMessageAsText(message, colorScheme: colorScheme))
-                                            .textSelection(.enabled)
                                             .fixedSize(horizontal: false, vertical: true)
+                                            .lineLimit(isLong && !isExpanded ? 30 : nil)
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                         
                                         // Delivery status indicator for private messages
@@ -320,25 +338,101 @@ struct ContentView: View {
                                         }
                                     }
                                     
-                                    // Check for plain URLs
-                                    let urls = message.content.extractURLs()
-                                    if !urls.isEmpty {
-                                        ForEach(urls.prefix(3).indices, id: \.self) { index in
-                                            let urlInfo = urls[index]
-                                            LazyLinkPreviewView(url: urlInfo.url, title: nil)
-                                                .padding(.top, 3)
-                                                .padding(.horizontal, 1)
-                                                .id("\(message.id)-\(urlInfo.url.absoluteString)")
+                                    // Expand/Collapse for very long messages
+                                    if (message.content.count > 2000 || message.content.hasVeryLongToken(threshold: 512)) && cashuTokens.isEmpty {
+                                        let isExpanded = expandedMessageIDs.contains(message.id)
+                                        Button(isExpanded ? "show less" : "show more") {
+                                            if isExpanded { expandedMessageIDs.remove(message.id) }
+                                            else { expandedMessageIDs.insert(message.id) }
                                         }
+                                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                        .foregroundColor(Color.blue)
+                                        .padding(.top, 4)
+                                    }
+
+                                    // Render payment chips (Lightning / Cashu) with rounded background
+                                    if !lightningLinks.isEmpty || !cashuTokens.isEmpty {
+                                        HStack(spacing: 8) {
+                                            ForEach(Array(lightningLinks.prefix(3)).indices, id: \.self) { i in
+                                                let link = lightningLinks[i]
+                                                PaymentChipView(
+                                                    emoji: "⚡",
+                                                    label: "pay via lightning",
+                                                    colorScheme: colorScheme
+                                                ) {
+                                                    #if os(iOS)
+                                                    if let url = URL(string: link) { UIApplication.shared.open(url) }
+                                                    #else
+                                                    if let url = URL(string: link) { NSWorkspace.shared.open(url) }
+                                                    #endif
+                                                }
+                                            }
+                                            ForEach(Array(cashuTokens.prefix(3)).indices, id: \.self) { i in
+                                                let token = cashuTokens[i]
+                                                let enc = token.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-_"))) ?? token
+                                                let urlStr = "cashu:\(enc)"
+                                                PaymentChipView(
+                                                    emoji: "🥜",
+                                                    label: "pay via cashu",
+                                                    colorScheme: colorScheme
+                                                ) {
+                                                    #if os(iOS)
+                                                    if let url = URL(string: urlStr) { UIApplication.shared.open(url) }
+                                                    #else
+                                                    if let url = URL(string: urlStr) { NSWorkspace.shared.open(url) }
+                                                    #endif
+                                                }
+                                            }
+                                        }
+                                        .padding(.top, 6)
+                                        .padding(.leading, 2)
                                     }
                                 }
                             }
                         }
-                        .id(message.id)
+                        .id(item.uiID)
                         .onAppear {
                             // Track if last item is visible to enable auto-scroll only when near bottom
                             if message.id == windowedMessages.last?.id {
                                 isAtBottom.wrappedValue = true
+                            }
+                            // Infinite scroll up: when top row appears, increase window and preserve anchor
+                            if message.id == windowedMessages.first?.id, messages.count > windowedMessages.count {
+                                let step = 200
+                                #if os(iOS)
+                                let contextKey: String = {
+                                    if let peer = privatePeer { return "dm:\(peer)" }
+                                    switch locationManager.selectedChannel {
+                                    case .mesh: return "mesh"
+                                    case .location(let ch): return "geo:\(ch.geohash)"
+                                    }
+                                }()
+                                #else
+                                let contextKey: String = {
+                                    if let peer = privatePeer { return "dm:\(peer)" }
+                                    return "mesh"
+                                }()
+                                #endif
+                                let preserveID = "\(contextKey)|\(message.id)"
+                                if let peer = privatePeer {
+                                    let current = windowCountPrivate[peer] ?? 300
+                                    let newCount = min(messages.count, current + step)
+                                    if newCount != current {
+                                        windowCountPrivate[peer] = newCount
+                                        DispatchQueue.main.async {
+                                            proxy.scrollTo(preserveID, anchor: .top)
+                                        }
+                                    }
+                                } else {
+                                    let current = windowCountPublic
+                                    let newCount = min(messages.count, current + step)
+                                    if newCount != current {
+                                        windowCountPublic = newCount
+                                        DispatchQueue.main.async {
+                                            proxy.scrollTo(preserveID, anchor: .top)
+                                        }
+                                    }
+                                }
                             }
                         }
                         .onDisappear {
@@ -348,11 +442,11 @@ struct ContentView: View {
                         }
                         .contentShape(Rectangle())
                         .onTapGesture {
-                            // Only show actions for messages from other users (not system or self)
-                            if message.sender != "system" && message.sender != viewModel.nickname {
-                                selectedMessageSender = message.sender
-                                selectedMessageSenderID = message.senderPeerID
-                                showMessageActions = true
+                            // Tap on message body: insert @mention for this sender
+                            if message.sender != "system" {
+                                let name = message.sender
+                                messageText = "@\(name) "
+                                isTextFieldFocused = true
                             }
                         }
                         .contextMenu {
@@ -370,29 +464,168 @@ struct ContentView: View {
                         .padding(.vertical, 2)
                     }
                 }
+                .transaction { tx in if viewModel.isBatchingPublic { tx.disablesAnimations = true } }
                 .padding(.vertical, 4)
             }
             .background(backgroundColor)
+            .onOpenURL { url in
+                guard url.scheme == "bitchat", url.host == "user" else { return }
+                let id = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                let peerID = id.removingPercentEncoding ?? id
+                selectedMessageSenderID = peerID
+                selectedMessageSender = viewModel.messages.last(where: { $0.senderPeerID == peerID })?.sender
+                showMessageActions = true
+            }
+            .onOpenURL { url in
+                guard url.scheme == "bitchat", url.host == "geohash" else { return }
+                let gh = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased()
+                let allowed = Set("0123456789bcdefghjkmnpqrstuvwxyz")
+                guard (2...12).contains(gh.count), gh.allSatisfy({ allowed.contains($0) }) else { return }
+                #if os(iOS)
+                func levelForLength(_ len: Int) -> GeohashChannelLevel {
+                    switch len {
+                    case 0...2: return .region
+                    case 3...4: return .province
+                    case 5: return .city
+                    case 6: return .neighborhood
+                    case 7: return .block
+                    default: return .block
+                    }
+                }
+                let level = levelForLength(gh.count)
+                let ch = GeohashChannel(level: level, geohash: gh)
+                LocationChannelManager.shared.markTeleported(for: gh, true)
+                LocationChannelManager.shared.select(ChannelID.location(ch))
+                #endif
+            }
             .onTapGesture(count: 3) {
                 // Triple-tap to clear current chat
                 viewModel.sendMessage("/clear")
             }
+            .onAppear {
+                // Force scroll to bottom when opening a chat view
+                let targetID: String? = {
+                    if let peer = privatePeer,
+                       let last = viewModel.getPrivateChatMessages(for: peer).suffix(300).last?.id {
+                        return "dm:\(peer)|\(last)"
+                    }
+                    #if os(iOS)
+                    let contextKey: String = {
+                        switch locationManager.selectedChannel {
+                        case .mesh: return "mesh"
+                        case .location(let ch): return "geo:\(ch.geohash)"
+                        }
+                    }()
+                    #else
+                    let contextKey: String = "mesh"
+                    #endif
+                    if let last = viewModel.messages.suffix(300).last?.id { return "\(contextKey)|\(last)" }
+                    return nil
+                }()
+                isAtBottom.wrappedValue = true
+                DispatchQueue.main.async {
+                    if let target = targetID { proxy.scrollTo(target, anchor: .bottom) }
+                }
+                // Second pass after a brief delay to handle late layout
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    let targetID2: String? = {
+                        if let peer = privatePeer,
+                           let last = viewModel.getPrivateChatMessages(for: peer).suffix(300).last?.id {
+                            return "dm:\(peer)|\(last)"
+                        }
+                        #if os(iOS)
+                        let contextKey: String = {
+                            switch locationManager.selectedChannel {
+                            case .mesh: return "mesh"
+                            case .location(let ch): return "geo:\(ch.geohash)"
+                            }
+                        }()
+                        #else
+                        let contextKey: String = "mesh"
+                        #endif
+                        if let last = viewModel.messages.suffix(300).last?.id { return "\(contextKey)|\(last)" }
+                        return nil
+                    }()
+                    if let t2 = targetID2 { proxy.scrollTo(t2, anchor: .bottom) }
+                }
+            }
+            .onChange(of: privatePeer) { _ in
+                // When switching to a different private chat, jump to bottom
+                let targetID: String? = {
+                    if let peer = privatePeer,
+                       let last = viewModel.getPrivateChatMessages(for: peer).suffix(300).last?.id {
+                        return "dm:\(peer)|\(last)"
+                    }
+                    #if os(iOS)
+                    let contextKey: String = {
+                        switch locationManager.selectedChannel {
+                        case .mesh: return "mesh"
+                        case .location(let ch): return "geo:\(ch.geohash)"
+                        }
+                    }()
+                    #else
+                    let contextKey: String = "mesh"
+                    #endif
+                    if let last = viewModel.messages.suffix(300).last?.id { return "\(contextKey)|\(last)" }
+                    return nil
+                }()
+                isAtBottom.wrappedValue = true
+                DispatchQueue.main.async {
+                    if let target = targetID { proxy.scrollTo(target, anchor: .bottom) }
+                }
+            }
             .onChange(of: viewModel.messages.count) { _ in
                 if privatePeer == nil && !viewModel.messages.isEmpty {
-                    // Only autoscroll when user is at/near bottom
-                    guard isAtBottom.wrappedValue else { return }
+                    // If the newest message is from me, always scroll to bottom
+                    let lastMsg = viewModel.messages.last!
+                    let isFromSelf = (lastMsg.sender == viewModel.nickname) || lastMsg.sender.hasPrefix(viewModel.nickname + "#")
+                    if !isFromSelf {
+                        // Only autoscroll when user is at/near bottom
+                        guard isAtBottom.wrappedValue else { return }
+                    } else {
+                        // Ensure we consider ourselves at bottom for subsequent messages
+                        isAtBottom.wrappedValue = true
+                    }
                     // Throttle scroll animations to prevent excessive UI updates
                     let now = Date()
                     if now.timeIntervalSince(lastScrollTime) > 0.5 {
                         // Immediate scroll if enough time has passed
                         lastScrollTime = now
-                        proxy.scrollTo(viewModel.messages.suffix(100).last?.id, anchor: .bottom)
+                        #if os(iOS)
+                        let contextKey: String = {
+                            switch locationManager.selectedChannel {
+                            case .mesh: return "mesh"
+                            case .location(let ch): return "geo:\(ch.geohash)"
+                            }
+                        }()
+                        #else
+                        let contextKey: String = "mesh"
+                        #endif
+                        let count = windowCountPublic
+                        let target = viewModel.messages.suffix(count).last.map { "\(contextKey)|\($0.id)" }
+                        DispatchQueue.main.async {
+                            if let target = target { proxy.scrollTo(target, anchor: .bottom) }
+                        }
                     } else {
                         // Schedule a delayed scroll
                         scrollThrottleTimer?.invalidate()
                         scrollThrottleTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { _ in
                             lastScrollTime = Date()
-                            proxy.scrollTo(viewModel.messages.suffix(100).last?.id, anchor: .bottom)
+                            #if os(iOS)
+                            let contextKey: String = {
+                                switch locationManager.selectedChannel {
+                                case .mesh: return "mesh"
+                                case .location(let ch): return "geo:\(ch.geohash)"
+                                }
+                            }()
+                            #else
+                            let contextKey: String = "mesh"
+                            #endif
+                            let count = windowCountPublic
+                            let target = viewModel.messages.suffix(count).last.map { "\(contextKey)|\($0.id)" }
+                            DispatchQueue.main.async {
+                                if let target = target { proxy.scrollTo(target, anchor: .bottom) }
+                            }
                         }
                     }
                 }
@@ -401,22 +634,59 @@ struct ContentView: View {
                 if let peerID = privatePeer,
                    let messages = viewModel.privateChats[peerID],
                    !messages.isEmpty {
-                    // Only autoscroll when user is at/near bottom
-                    guard isAtBottom.wrappedValue else { return }
+                    // If the newest private message is from me, always scroll
+                    let lastMsg = messages.last!
+                    let isFromSelf = (lastMsg.sender == viewModel.nickname) || lastMsg.sender.hasPrefix(viewModel.nickname + "#")
+                    if !isFromSelf {
+                        // Only autoscroll when user is at/near bottom
+                        guard isAtBottom.wrappedValue else { return }
+                    } else {
+                        isAtBottom.wrappedValue = true
+                    }
                     // Same throttling for private chats
                     let now = Date()
                     if now.timeIntervalSince(lastScrollTime) > 0.5 {
                         lastScrollTime = now
-                        proxy.scrollTo(messages.suffix(100).last?.id, anchor: .bottom)
+                        let contextKey = "dm:\(peerID)"
+                        let count = windowCountPrivate[peerID] ?? 300
+                        let target = messages.suffix(count).last.map { "\(contextKey)|\($0.id)" }
+                        DispatchQueue.main.async {
+                            if let target = target { proxy.scrollTo(target, anchor: .bottom) }
+                        }
                     } else {
                         scrollThrottleTimer?.invalidate()
                         scrollThrottleTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { _ in
                             lastScrollTime = Date()
-                            proxy.scrollTo(messages.suffix(100).last?.id, anchor: .bottom)
+                            let contextKey = "dm:\(peerID)"
+                            let count = windowCountPrivate[peerID] ?? 300
+                            let target = messages.suffix(count).last.map { "\(contextKey)|\($0.id)" }
+                            DispatchQueue.main.async {
+                                if let target = target { proxy.scrollTo(target, anchor: .bottom) }
+                            }
                         }
                     }
                 }
             }
+            #if os(iOS)
+            .onChange(of: locationManager.selectedChannel) { newChannel in
+                // When switching to a new geohash channel, scroll to the bottom
+                guard privatePeer == nil else { return }
+                switch newChannel {
+                case .mesh:
+                    break
+                case .location(let ch):
+                    // Reset window size
+                    windowCountPublic = 300
+                    let contextKey = "geo:\(ch.geohash)"
+                    let last = viewModel.messages.suffix(windowCountPublic).last?.id
+                    let target = last.map { "\(contextKey)|\($0)" }
+                    isAtBottom.wrappedValue = true
+                    DispatchQueue.main.async {
+                        if let target = target { proxy.scrollTo(target, anchor: .bottom) }
+                    }
+                }
+            }
+            #endif
             .onAppear {
                 // Also check when view appears
                 if let peerID = privatePeer {
@@ -433,6 +703,19 @@ struct ContentView: View {
                 }
             }
         }
+        .environment(\.openURL, OpenURLAction { url in
+            // Intercept custom cashu: links created in attributed text
+            if let scheme = url.scheme?.lowercased(), scheme == "cashu" || scheme == "lightning" {
+                #if os(iOS)
+                UIApplication.shared.open(url)
+                return .handled
+                #else
+                // On non-iOS platforms, let the system handle or ignore
+                return .systemAction
+                #endif
+            }
+            return .systemAction
+        })
     }
     
     // MARK: - Input View
@@ -653,6 +936,24 @@ struct ContentView: View {
                         .font(.system(size: 16, weight: .bold, design: .monospaced))
                         .foregroundColor(textColor)
                     Spacer()
+                    // Show QR only on mesh channel's peer list
+                    #if os(iOS)
+                    if case .mesh = locationManager.selectedChannel {
+                        Button(action: { showVerifySheet = true }) {
+                            Image(systemName: "qrcode")
+                                .font(.system(size: 14))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Verification: show my QR or scan a friend")
+                    }
+                    #else
+                    Button(action: { showVerifySheet = true }) {
+                        Image(systemName: "qrcode")
+                            .font(.system(size: 14))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Verification: show my QR or scan a friend")
+                    #endif
                 }
                 .frame(height: 44) // Match header height
                 .padding(.horizontal, 12)
@@ -943,12 +1244,18 @@ struct ContentView: View {
                         .accessibilityHidden(true)
                 }
                 .foregroundColor(headerCountColor)
+
+                // QR moved to the PEOPLE header in the sidebar when on mesh channel
             }
             .onTapGesture {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     showSidebar.toggle()
                     sidebarDragOffset = 0
                 }
+            }
+            .sheet(isPresented: $showVerifySheet) {
+                VerificationSheetView(isPresented: $showVerifySheet)
+                    .environmentObject(viewModel)
             }
         }
         .frame(height: 44)
@@ -1126,6 +1433,44 @@ struct ContentView: View {
 
 // MARK: - Helper Views
 
+// Rounded payment chip button
+private struct PaymentChipView: View {
+    let emoji: String
+    let label: String
+    let colorScheme: ColorScheme
+    let action: () -> Void
+    
+    private var fgColor: Color {
+        colorScheme == .dark ? Color.green : Color(red: 0, green: 0.5, blue: 0)
+    }
+    private var bgColor: Color {
+        colorScheme == .dark ? Color.gray.opacity(0.18) : Color.gray.opacity(0.12)
+    }
+    private var border: Color { fgColor.opacity(0.25) }
+    
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Text(emoji)
+                Text(label)
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+            }
+            .padding(.vertical, 6)
+            .padding(.horizontal, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(bgColor)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(border, lineWidth: 1)
+            )
+            .foregroundColor(fgColor)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 // Helper view for rendering message content (plain, no hashtag/mention formatting)
 struct MessageContentView: View {
     let message: BitchatMessage
@@ -1137,7 +1482,6 @@ struct MessageContentView: View {
         Text(message.content)
             .font(.system(size: 14, design: .monospaced))
             .fontWeight(isMentioned ? .bold : .regular)
-            .textSelection(.enabled)
     }
     
     // MARK: - Helper Methods
